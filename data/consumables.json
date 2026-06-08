@@ -1,0 +1,32 @@
+{
+  "healing_potion": {
+    "name_ru": "Зелье лечения",
+    "effect": "heal",
+    "amount": "2d4+2",
+    "value": 15
+  },
+  "greater_healing_potion": {
+    "name_ru": "Большое зелье лечения",
+    "effect": "heal",
+    "amount": "4d4+4",
+    "value": 50
+  },
+  "scroll_magic_missile": {
+    "name_ru": "Свиток: Волшебные стрелы",
+    "effect": "magic_missile",
+    "amount": "3d4+3",
+    "value": 30
+  },
+  "scroll_ray_of_frost": {
+    "name_ru": "Свиток: Луч заморозки",
+    "effect": "ray_of_frost",
+    "amount": "1d8",
+    "value": 25
+  },
+  "scroll_shield": {
+    "name_ru": "Свиток: Щит",
+    "effect": "shield",
+    "amount": "",
+    "value": 20
+  }
+}

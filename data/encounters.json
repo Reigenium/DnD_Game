@@ -1,0 +1,92 @@
+{
+  "chest_or_mimic": {
+    "title": "Сундук",
+    "description": "В углу комнаты стоит окованный железом сундук. Тяжёлый и пыльный, он манит обещанием сокровищ — или ловушки.",
+    "choices": [
+      {
+        "label": "Открыть сундук",
+        "branch": {
+          "condition": { "type": "random", "chance": 0.25 },
+          "if_true": { "type": "spawn_combat", "monster": "slime", "label": "мимик" },
+          "if_false": { "type": "give_loot", "table": "basic" }
+        }
+      },
+      { "label": "Уйти", "effects": [] }
+    ]
+  },
+  "merchant": {
+    "title": "Странный торговец",
+    "description": "В тенях стоит сгорбленная фигура в плаще. 'Чем могу служить?' — шепчет она, показывая лоток с зельями.",
+    "choices": [
+      {
+        "label": "Купить зелье лечения (15 зм)",
+        "requires": { "gold": 15 },
+        "effects": [
+          { "type": "spend_gold", "amount": 15 },
+          { "type": "give_item", "item": "healing_potion" }
+        ]
+      },
+      {
+        "label": "Купить большое зелье (50 зм)",
+        "requires": { "gold": 50 },
+        "effects": [
+          { "type": "spend_gold", "amount": 50 },
+          { "type": "give_item", "item": "greater_healing_potion" }
+        ]
+      },
+      { "label": "Уйти", "effects": [] }
+    ]
+  },
+  "beggar": {
+    "title": "Просящий",
+    "description": "Раненый странник лежит у стены. 'Помоги мне, и боги вознаградят тебя! Любое зелье — что угодно...'",
+    "choices": [
+      {
+        "label": "Отдать зелье лечения",
+        "requires": { "item": "healing_potion" },
+        "effects": [
+          { "type": "remove_item", "item": "healing_potion" },
+          { "type": "give_xp", "amount": 100 }
+        ]
+      },
+      {
+        "label": "Отказать",
+        "effects": []
+      }
+    ]
+  },
+  "shrine": {
+    "title": "Замшелый алтарь",
+    "description": "Каменный алтарь покрыт древними рунами. От него веет холодом и магией.",
+    "choices": [
+      {
+        "label": "Помолиться (спасбросок WIS DC 13)",
+        "check": { "type": "save", "ability": "wis", "dc": 13 },
+        "on_success_text": "Боги услышали тебя.",
+        "on_fail_text": "Магия алтаря обжигает разум.",
+        "on_success": [{ "type": "buff", "name": "blessed", "duration": 10 }],
+        "on_fail": [{ "type": "damage", "amount": "1d4" }]
+      },
+      {
+        "label": "Пожертвовать 10 зм (требуется 10 зм)",
+        "requires": { "gold": 10 },
+        "effects": [
+          { "type": "spend_gold", "amount": 10 },
+          { "type": "heal", "amount": "2d4+2" }
+        ]
+      },
+      { "label": "Уйти", "effects": [] }
+    ]
+  },
+  "campfire": {
+    "title": "Тлеющий костёр",
+    "description": "В углу комнаты слабо горит давно забытый костёр. Можно отдохнуть, не сильно рискуя.",
+    "choices": [
+      {
+        "label": "Короткий привал (трать 1 кость хитов)",
+        "effects": [{ "type": "short_rest" }]
+      },
+      { "label": "Идти дальше", "effects": [] }
+    ]
+  }
+}

@@ -1,0 +1,77 @@
+{
+  "goblin": {
+    "name_ru": "Гоблин",
+    "char": "g",
+    "color": [80, 200, 80],
+    "max_hp": 7,
+    "ac": 15,
+    "str": 8, "dex": 14, "con": 10, "int": 10, "wis": 8, "cha": 8,
+    "attacks": [
+      { "name": "Удар скимитаром", "to_hit": 4, "damage": "1d6+2", "damage_type": "slashing" }
+    ],
+    "xp": 50,
+    "cr": 0.25,
+    "traits": [],
+    "description": "Мелкий злобный гуманоид."
+  },
+  "skeleton": {
+    "name_ru": "Скелет",
+    "char": "s",
+    "color": [230, 230, 220],
+    "max_hp": 13,
+    "ac": 13,
+    "str": 10, "dex": 14, "con": 15, "int": 6, "wis": 8, "cha": 5,
+    "attacks": [
+      { "name": "Удар коротким мечом", "to_hit": 4, "damage": "1d6+2", "damage_type": "slashing" }
+    ],
+    "xp": 50,
+    "cr": 0.25,
+    "traits": ["undead_resist"],
+    "description": "Восставший воин. Рубящий и колющий урон по нему уполовинен."
+  },
+  "wolf": {
+    "name_ru": "Волк",
+    "char": "w",
+    "color": [170, 130, 90],
+    "max_hp": 11,
+    "ac": 13,
+    "str": 12, "dex": 15, "con": 12, "int": 3, "wis": 12, "cha": 6,
+    "attacks": [
+      { "name": "Укус", "to_hit": 4, "damage": "2d4+2", "damage_type": "piercing" }
+    ],
+    "xp": 50,
+    "cr": 0.25,
+    "traits": ["pack_tactics"],
+    "description": "Стайная тактика: атакует с преимуществом, если есть другой враг рядом."
+  },
+  "slime": {
+    "name_ru": "Слизь",
+    "char": "j",
+    "color": [120, 220, 220],
+    "max_hp": 14,
+    "ac": 8,
+    "str": 12, "dex": 6, "con": 14, "int": 1, "wis": 6, "cha": 1,
+    "attacks": [
+      { "name": "Псевдоподия", "to_hit": 3, "damage": "1d6+1", "damage_type": "acid" }
+    ],
+    "xp": 25,
+    "cr": 0.125,
+    "traits": ["acid_splash"],
+    "description": "При попадании по слизи в ближнем бою получаешь 1 кислотного урона."
+  },
+  "orc": {
+    "name_ru": "Орк",
+    "char": "O",
+    "color": [200, 70, 70],
+    "max_hp": 22,
+    "ac": 13,
+    "str": 16, "dex": 12, "con": 16, "int": 7, "wis": 11, "cha": 10,
+    "attacks": [
+      { "name": "Удар секирой", "to_hit": 5, "damage": "1d12+3", "damage_type": "slashing" }
+    ],
+    "xp": 100,
+    "cr": 0.5,
+    "traits": ["rage_at_half"],
+    "description": "Ярость: при потере половины HP получает +2 к броскам атаки."
+  }
+}

@@ -1,0 +1,47 @@
+{
+  "shortsword": {
+    "name_ru": "Короткий меч",
+    "damage": "1d6",
+    "damage_type": "slashing",
+    "ability": "str",
+    "finesse": true,
+    "ranged": false,
+    "value": 10
+  },
+  "mace": {
+    "name_ru": "Булава",
+    "damage": "1d6",
+    "damage_type": "bludgeoning",
+    "ability": "str",
+    "finesse": false,
+    "ranged": false,
+    "value": 5
+  },
+  "warhammer": {
+    "name_ru": "Боевой молот",
+    "damage": "1d8",
+    "damage_type": "bludgeoning",
+    "ability": "str",
+    "finesse": false,
+    "ranged": false,
+    "value": 15
+  },
+  "rapier": {
+    "name_ru": "Рапира",
+    "damage": "1d8",
+    "damage_type": "piercing",
+    "ability": "dex",
+    "finesse": true,
+    "ranged": false,
+    "value": 25
+  },
+  "shortbow": {
+    "name_ru": "Короткий лук",
+    "damage": "1d6",
+    "damage_type": "piercing",
+    "ability": "dex",
+    "finesse": false,
+    "ranged": true,
+    "value": 25
+  }
+}

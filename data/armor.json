@@ -1,0 +1,42 @@
+{
+  "padded": {
+    "name_ru": "Стёганый доспех",
+    "ac": 11,
+    "ac_bonus": 0,
+    "dex_bonus": 10,
+    "type": "light",
+    "value": 5
+  },
+  "leather": {
+    "name_ru": "Кожаный доспех",
+    "ac": 11,
+    "ac_bonus": 0,
+    "dex_bonus": 10,
+    "type": "light",
+    "value": 10
+  },
+  "chain_shirt": {
+    "name_ru": "Кольчужная рубаха",
+    "ac": 13,
+    "ac_bonus": 0,
+    "dex_bonus": 2,
+    "type": "medium",
+    "value": 50
+  },
+  "chain_mail": {
+    "name_ru": "Кольчуга",
+    "ac": 16,
+    "ac_bonus": 0,
+    "dex_bonus": 0,
+    "type": "heavy",
+    "value": 75
+  },
+  "shield": {
+    "name_ru": "Щит",
+    "ac": 0,
+    "ac_bonus": 2,
+    "dex_bonus": 10,
+    "type": "shield",
+    "value": 10
+  }
+}
