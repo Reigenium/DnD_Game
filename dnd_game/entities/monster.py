@@ -7,6 +7,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from ..rules.ability import modifier
+from ..rules.status import EnragedStatus, StaggeredStatus
+from .combatant import Combatant
 
 DATA_DIR = Path(__file__).resolve().parent.parent.parent / "data"
 
@@ -20,32 +22,53 @@ class MonsterAttack:
 
 
 @dataclass
-class Monster:
-    id: str
-    name_ru: str
-    char: str
-    color: tuple[int, int, int]
-    max_hp: int
-    current_hp: int
-    ac: int
-    str_: int
-    dex: int
-    con: int
-    int_: int
-    wis: int
-    cha: int
+class Monster(Combatant):
+    # ── Identity ──────────────────────────────────────────────────────────
+    id: str = ""
+    name_ru: str = ""
+    char: str = "?"
+    color: tuple[int, int, int] = (255, 255, 255)
+
+    # ── Stats ─────────────────────────────────────────────────────────────
+    ac: int = 10
+    str_: int = 10
+    dex: int = 10
+    con: int = 10
+    int_: int = 10
+    wis: int = 10
+    cha: int = 10
+
+    # ── Combat data ───────────────────────────────────────────────────────
     attacks: list[MonsterAttack] = field(default_factory=list)
     xp: int = 0
     cr: float = 0.0
     description: str = ""
     traits: list[str] = field(default_factory=list)
 
+    # ── Damage type modifiers (Phase 2) ───────────────────────────────────
+    resistances: list[str] = field(default_factory=list)    # half damage
+    vulnerabilities: list[str] = field(default_factory=list)  # double damage
+    immunities: list[str] = field(default_factory=list)     # no damage
+
+    # ── Poise / Break (Phase 2) ───────────────────────────────────────────
+    max_poise: int = 0   # 0 = no poise system for this monster
+    poise: int = 0
+
+    # ── Intent telegraph (Phase 2) ────────────────────────────────────────
+    intent_pool: list[str] = field(default_factory=list)   # e.g. ["attack","heavy_attack"]
+    current_intent: str = ""                               # chosen at round start
+
+    # ── Loot ──────────────────────────────────────────────────────────────
+    loot_table: list[dict] = field(default_factory=list)   # [{id, chance}]
+
+    # ── Position ──────────────────────────────────────────────────────────
     x: int = 0
     y: int = 0
 
-    # Transient combat state.
-    frozen_turns: int = 0
-    enraged: bool = False
+    # ── AI state ──────────────────────────────────────────────────────────
+    alerted: bool = False   # True when monster noticed the player
+
+    # ── Ability helper ────────────────────────────────────────────────────
 
     def mod(self, ability: str) -> int:
         return modifier({
@@ -53,25 +76,88 @@ class Monster:
             "int": self.int_, "wis": self.wis, "cha": self.cha,
         }[ability])
 
-    @property
-    def is_alive(self) -> bool:
-        return self.current_hp > 0
+    # ── Backward-compat properties ────────────────────────────────────────
 
-    def take_damage(self, amount: int) -> tuple[int, bool]:
-        """Apply damage. Returns (actual, newly_enraged)."""
-        amount = max(0, amount)
+    @property
+    def frozen_turns(self) -> int:
+        s = self.get_status("frozen")
+        return s.duration if s is not None else 0
+
+    @frozen_turns.setter
+    def frozen_turns(self, value: int) -> None:
+        if value <= 0:
+            self.remove_status("frozen")
+        else:
+            from ..rules.status import FrozenStatus
+            existing = self.get_status("frozen")
+            if existing is not None:
+                existing.duration = value
+            else:
+                self.add_status(FrozenStatus(duration=value))
+
+    @property
+    def enraged(self) -> bool:
+        return self.has_status("enraged")
+
+    @enraged.setter
+    def enraged(self, value: bool) -> None:
+        if value:
+            self.add_status(EnragedStatus(duration=-1))
+        else:
+            self.remove_status("enraged")
+
+    # ── Damage resolution ─────────────────────────────────────────────────
+
+    def take_damage(self, amount: int, damage_type: str = "physical") -> tuple[int, bool]:
+        """Apply damage with resist/vuln/immunity resolution.
+
+        Returns (damage_applied, newly_enraged).
+        """
+        if damage_type in self.immunities:
+            return 0, False
+
+        if damage_type in self.vulnerabilities:
+            amount = amount * 2
+        elif damage_type in self.resistances:
+            amount = max(1, amount // 2)
+
+        # Legacy undead_resist trait (replaced by data but kept for saves compat).
+        if "undead_resist" in self.traits and damage_type in ("slashing", "piercing"):
+            if damage_type not in self.resistances:  # don't double-apply
+                amount = max(1, amount // 2)
+
+        was_enraged = self.has_status("enraged")
         was_above_half = self.current_hp > self.max_hp // 2
-        was_enraged = self.enraged
-        self.current_hp = max(0, self.current_hp - amount)
+
+        applied = super().take_damage(amount)
+
         newly_enraged = False
-        if ("rage_at_half" in self.traits and not was_enraged
+        if ("rage_at_half" in self.traits
+                and not was_enraged
                 and was_above_half
                 and self.current_hp <= self.max_hp // 2
                 and self.is_alive):
-            self.enraged = True
+            self.add_status(EnragedStatus(duration=-1))
             newly_enraged = True
-        return amount, newly_enraged
 
+        # Poise damage from vulnerability hits.
+        if self.max_poise > 0 and damage_type in self.vulnerabilities and self.poise > 0:
+            self.poise -= 1
+            if self.poise == 0:
+                self.add_status(StaggeredStatus(duration=1))
+                self.poise = self.max_poise  # reset for next break
+
+        return applied, newly_enraged
+
+    def choose_intent(self, rng) -> None:
+        """Pick next intent from intent_pool (called at round start)."""
+        if self.intent_pool:
+            self.current_intent = rng.choice(self.intent_pool)
+        else:
+            self.current_intent = "attack"
+
+
+# ── Data loading ─────────────────────────────────────────────────────────────
 
 _MONSTER_DATA: dict[str, dict] | None = None
 
@@ -90,6 +176,7 @@ def spawn_monster(monster_id: str, x: int = 0, y: int = 0) -> Monster:
         raise KeyError(f"Unknown monster id: {monster_id!r}")
     md = deepcopy(data[monster_id])
     attacks = [MonsterAttack(**a) for a in md.get("attacks", [])]
+    poise_val = md.get("poise", 0)
     return Monster(
         id=monster_id,
         name_ru=md["name_ru"],
@@ -105,6 +192,13 @@ def spawn_monster(monster_id: str, x: int = 0, y: int = 0) -> Monster:
         cr=md.get("cr", 0.0),
         description=md.get("description", ""),
         traits=list(md.get("traits", [])),
+        resistances=list(md.get("resistances", [])),
+        vulnerabilities=list(md.get("vulnerabilities", [])),
+        immunities=list(md.get("immunities", [])),
+        max_poise=poise_val,
+        poise=poise_val,
+        intent_pool=list(md.get("intent_pool", ["attack"])),
+        loot_table=list(md.get("loot_table", [])),
         x=x, y=y,
     )
 

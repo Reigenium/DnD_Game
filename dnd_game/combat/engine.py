@@ -1,17 +1,11 @@
-"""Turn-based, JRPG-style combat encounter.
+"""Turn-based JRPG combat engine.
 
-JRPG flavor:
-- Player always acts first each round.
-- Killing a monster refunds a chunk of HP (~20% of its max), so you can
-  survive a war of attrition.
-- Per-combat resources reset at the start of each fight (Second Wind).
+Phase 0: unified status system, Focus resource.
+Phase 1: Sweep (AoE), Riposte (counter), Trip (stun), Action Surge, Extra Attack.
+Phase 2: CTB turn-order timeline via TurnOrder, poise/break, intent telegraph.
 
-Monster traits (string flags read from data/monsters.json):
-- ``undead_resist``   — halves incoming slashing/piercing damage.
-- ``pack_tactics``    — this monster attacks with advantage if any other
-                         living enemy is in the fight.
-- ``rage_at_half``    — once HP drops to half, +2 to all attack rolls.
-- ``acid_splash``     — splashes 1 acid damage to a melee attacker on hit.
+Player always starts first (JRPG convention).  After each player action the engine
+processes all enemy turns (in speed order) before returning to PLAYER_TURN.
 """
 from __future__ import annotations
 
@@ -24,6 +18,12 @@ from ..entities.character import Character
 from ..entities.monster import Monster
 from ..items.item import Consumable
 from ..rules.combat import make_attack
+from ..rules.status import (
+    ActionSurgeUsedStatus, DodgingStatus, RiposteStatus, ShieldedStatus,
+    StaggeredStatus, StunnedStatus,
+)
+from .targeting import TargetMode, resolve_targets
+from .turn_order import TurnOrder
 
 
 class CombatPhase(Enum):
@@ -34,8 +34,8 @@ class CombatPhase(Enum):
     FLED = "fled"
 
 
-# Damage types considered "melee" for the slime's acid splash counter.
 MELEE_DAMAGE_TYPES = {"slashing", "piercing", "bludgeoning"}
+TRIP_STR_DC = 13
 
 
 @dataclass
@@ -47,9 +47,20 @@ class CombatEngine:
     target_index: int = 0
     xp_gained: int = 0
 
+    # Extra actions remaining this turn (Action Surge grants 1).
+    extra_actions: int = 0
+
+    # TurnOrder for Phase 2 (enemy turn ordering by speed).
+    turn_order: TurnOrder = field(init=False)
+
     def __post_init__(self) -> None:
+        from ..core.rng import get_rng
+        self.turn_order = TurnOrder([self.player] + self.enemies, get_rng())
         names = ", ".join(e.name_ru for e in self.enemies)
         self.log.append(f"Бой! В строю: {names}.")
+        self._refresh_all_intents()
+
+    # ── Target helpers ────────────────────────────────────────────────────
 
     @property
     def alive_enemies(self) -> list[Monster]:
@@ -74,17 +85,160 @@ class CombatEngine:
         if alive and 0 <= index < len(alive):
             self.target_index = index
 
-    # ----- Player actions -----
+    # ── Intent ───────────────────────────────────────────────────────────
+
+    def _refresh_all_intents(self) -> None:
+        from ..core.rng import get_rng
+        rng = get_rng()
+        for e in self.alive_enemies:
+            e.choose_intent(rng)
+
+    # ── Player actions ────────────────────────────────────────────────────
 
     def player_attack(self) -> None:
         target = self.current_target
         if target is None:
             return
-        bonus = self.player.attack_bonus + (2 if self.player.blessed_turns > 0 else 0)
+        attacks = self.player.attacks_per_action
+        for i in range(attacks):
+            if not target.is_alive:
+                # Shift to next alive enemy.
+                alive = self.alive_enemies
+                if not alive:
+                    break
+                self.target_index = 0
+                target = alive[0]
+            self._do_player_attack(target)
+            if not target.is_alive:
+                self._on_kill(target)
+                target = self.current_target
+                if target is None:
+                    break
+        self._end_player_turn()
+
+    def _do_player_attack(self, target: Monster) -> None:
+        blessed_bonus = 0
+        bs = self.player.get_status("blessed")
+        if bs is not None:
+            blessed_bonus = getattr(bs, "attack_bonus", 2)
+
+        # Dueling style: +2 damage when wielding a one-handed weapon, no off-hand.
+        style_dmg_bonus = 0
+        if self.player.battle_style == "dueling":
+            w = self.player.equipped_weapon
+            if w is not None and not w.ranged:
+                style_dmg_bonus = 2
+
+        bonus = self.player.attack_bonus + blessed_bonus
         result = make_attack(
             attacker_name=self.player.name,
             target_name=target.name_ru,
             attack_bonus=bonus,
+            damage_expression=self.player.damage_expression,
+            damage_modifier=self.player.damage_bonus + style_dmg_bonus,
+            target_ac=target.ac,
+            damage_type=self.player.damage_type,
+        )
+        self.log.append(result.log)
+        if result.hit:
+            dmg, newly_enraged = target.take_damage(result.damage_total, self.player.damage_type)
+            # Report resistance/vulnerability adjustments.
+            self._log_damage_mods(target, result.damage_total, dmg, self.player.damage_type)
+            if newly_enraged:
+                self.log.append(f"  → {target.name_ru} впадает в ярость! +2 к атакам.")
+            if dmg > 0:
+                # Stagger announcement.
+                if target.has_status("staggered") and not target.has_status("staggered"):
+                    pass  # handled in take_damage
+                # Focus gain on hit.
+                gained = self.player.gain_focus(1)
+                if gained > 0:
+                    self.log.append(f"  → Фокус +1 ({self.player.focus}/{self.player.focus_max})")
+            if not target.is_alive:
+                pass  # caller handles _on_kill
+            else:
+                self._maybe_acid_splash(target)
+
+    def _log_damage_mods(self, target: Monster, raw: int, applied: int, dtype: str) -> None:
+        if dtype in target.immunities:
+            self.log.append(f"  → {target.name_ru} иммунен к {dtype}!")
+        elif dtype in target.vulnerabilities and applied > raw:
+            self.log.append(f"  → {target.name_ru} уязвим к {dtype}! Двойной урон: {applied}.")
+        elif dtype in target.resistances and applied < raw:
+            self.log.append(f"  → {target.name_ru} устойчив к {dtype}: урон {applied}.")
+        elif "undead_resist" in target.traits and dtype in ("slashing", "piercing"):
+            if dtype not in target.resistances:
+                self.log.append(f"  → {target.name_ru} (нежить): урон уполовинен → {applied}.")
+
+    def player_sweep(self) -> None:
+        """AoE attack hitting ALL alive enemies — primary at full damage, others at half."""
+        if not self.player.spend_focus(2):
+            self.log.append("Недостаточно Фокуса для Размаха (нужно 2).")
+            return
+        targets = self.alive_enemies
+        if not targets:
+            return
+        primary = self.current_target
+        self.log.append(f"{self.player.name} делает Размах по всем противникам!")
+
+        blessed_bonus = 0
+        bs = self.player.get_status("blessed")
+        if bs is not None:
+            blessed_bonus = getattr(bs, "attack_bonus", 2)
+        bonus = self.player.attack_bonus + blessed_bonus
+
+        for i, target in enumerate(targets):
+            result = make_attack(
+                attacker_name=self.player.name,
+                target_name=target.name_ru,
+                attack_bonus=bonus - (2 if i > 0 else 0),  # -2 for secondary
+                damage_expression=self.player.damage_expression,
+                damage_modifier=self.player.damage_bonus,
+                target_ac=target.ac,
+                damage_type=self.player.damage_type,
+            )
+            self.log.append(result.log)
+            if result.hit:
+                raw = result.damage_total
+                final = raw if target is primary else max(1, raw // 2)
+                dmg, newly_enraged = target.take_damage(final, self.player.damage_type)
+                if i > 0 and result.hit:
+                    self.log.append(f"  → {target.name_ru}: {dmg} (половина).")
+                if newly_enraged:
+                    self.log.append(f"  → {target.name_ru} впадает в ярость!")
+                if not target.is_alive:
+                    self._on_kill(target)
+
+        self.player.gain_focus(1)
+        self._end_player_turn()
+
+    def player_riposte(self) -> None:
+        """Riposte stance: counter-attack on the next incoming hit."""
+        if not self.player.spend_focus(1):
+            self.log.append("Недостаточно Фокуса для Рипоста (нужно 1).")
+            return
+        self.player.add_status(RiposteStatus(duration=-1))
+        self.log.append(f"{self.player.name} принимает боевую стойку Рипост — контратакует при следующем ударе!")
+        self._end_player_turn()
+
+    def player_trip(self) -> None:
+        """Trip attack: on hit, target must pass STR save DC 13 or be stunned."""
+        target = self.current_target
+        if target is None:
+            return
+        if not self.player.spend_focus(1):
+            self.log.append("Недостаточно Фокуса для Подсечки (нужно 1).")
+            return
+
+        blessed_bonus = 0
+        bs = self.player.get_status("blessed")
+        if bs is not None:
+            blessed_bonus = getattr(bs, "attack_bonus", 2)
+
+        result = make_attack(
+            attacker_name=self.player.name,
+            target_name=target.name_ru,
+            attack_bonus=self.player.attack_bonus + blessed_bonus,
             damage_expression=self.player.damage_expression,
             damage_modifier=self.player.damage_bonus,
             target_ac=target.ac,
@@ -92,34 +246,41 @@ class CombatEngine:
         )
         self.log.append(result.log)
         if result.hit:
-            dmg = self._apply_player_damage_to(target, result.damage_total, self.player.damage_type)
-            if not target.is_alive:
-                self._on_kill(target)
+            dmg, newly_enraged = target.take_damage(result.damage_total, self.player.damage_type)
+            if newly_enraged:
+                self.log.append(f"  → {target.name_ru} впадает в ярость!")
+            if target.is_alive:
+                # STR saving throw.
+                str_save = d20(target.mod("str"))
+                if str_save.total < TRIP_STR_DC:
+                    target.add_status(StunnedStatus(duration=1))
+                    self.log.append(
+                        f"  → {target.name_ru} подсечён! СИЛ {str_save} vs DC {TRIP_STR_DC} → провал, пропускает ход."
+                    )
+                else:
+                    self.log.append(
+                        f"  → {target.name_ru} устоял. СИЛ {str_save} vs DC {TRIP_STR_DC} → успех."
+                    )
             else:
-                self._maybe_acid_splash(target)
+                self._on_kill(target)
+            self.player.gain_focus(1)
         self._end_player_turn()
 
-    def _apply_player_damage_to(self, target: Monster, raw_damage: int, damage_type: str) -> int:
-        dmg = raw_damage
-        if "undead_resist" in target.traits and damage_type in ("slashing", "piercing"):
-            dmg = max(1, dmg // 2)
-            self.log.append(
-                f"  → {target.name_ru} (нежить): {damage_type} урон уполовинен → {dmg}."
-            )
-        applied, newly_enraged = target.take_damage(dmg)
-        if newly_enraged:
-            self.log.append(f"  → {target.name_ru} впадает в ярость! +2 к атакам.")
-        return applied
-
-    def _maybe_acid_splash(self, target: Monster) -> None:
-        # Counter for melee-only swings.
-        if "acid_splash" in target.traits and self.player.damage_type in MELEE_DAMAGE_TYPES:
-            actual = self.player.take_damage(1)
-            if actual > 0:
-                self.log.append(f"  → кислотный отклик {target.name_ru}: {actual} урона тебе.")
+    def player_action_surge(self) -> None:
+        """Grant one extra action this turn (once per combat)."""
+        if self.player.has_status("action_surge_used"):
+            self.log.append("Action Surge уже использован в этом бою.")
+            return
+        if self.extra_actions > 0:
+            self.log.append("Action Surge уже активирован.")
+            return
+        self.player.add_status(ActionSurgeUsedStatus(duration=-1))
+        self.extra_actions = 1
+        self.log.append(f"{self.player.name} использует Action Surge — ещё одно действие!")
+        # Phase stays PLAYER_TURN — don't call _end_player_turn.
 
     def player_dodge(self) -> None:
-        self.player.dodge_active = True
+        self.player.add_status(DodgingStatus(duration=-1))  # removed after enemy phase
         self.log.append(f"{self.player.name} принимает защитную стойку (атаки с помехой).")
         self._end_player_turn()
 
@@ -159,9 +320,7 @@ class CombatEngine:
         if effect == "heal":
             r = roll(consumable.amount)
             healed = self.player.heal(r.total)
-            self.log.append(
-                f"{self.player.name} пьёт {consumable.name_ru}: +{healed} HP {r}."
-            )
+            self.log.append(f"{self.player.name} пьёт {consumable.name_ru}: +{healed} HP {r}.")
             self._remove_consumable(consumable)
             self._end_player_turn()
             return True
@@ -182,10 +341,9 @@ class CombatEngine:
                 f"{target.name_ru}: 3 стрелы, итого {total} силового урона."
             )
             self.log.append("  → " + "  ".join(rolls_log))
-            # force damage ignores resistances; raw apply.
-            applied, newly_enraged = target.take_damage(total)
+            applied, newly_enraged = target.take_damage(total, "force")
             if newly_enraged:
-                self.log.append(f"  → {target.name_ru} впадает в ярость! +2 к атакам.")
+                self.log.append(f"  → {target.name_ru} впадает в ярость!")
             if not target.is_alive:
                 self._on_kill(target)
             self._remove_consumable(consumable)
@@ -197,11 +355,10 @@ class CombatEngine:
             if target is None:
                 self.log.append("Нет цели для луча заморозки.")
                 return False
-            atk_mod = self.player.spell_attack_bonus
             result = make_attack(
                 attacker_name=f"{self.player.name} (Луч заморозки)",
                 target_name=target.name_ru,
-                attack_bonus=atk_mod,
+                attack_bonus=self.player.spell_attack_bonus,
                 damage_expression="1d8",
                 damage_modifier=0,
                 target_ac=target.ac,
@@ -209,9 +366,10 @@ class CombatEngine:
             )
             self.log.append(result.log)
             if result.hit:
-                applied, newly_enraged = target.take_damage(result.damage_total)
+                applied, newly_enraged = target.take_damage(result.damage_total, "cold")
+                self._log_damage_mods(target, result.damage_total, applied, "cold")
                 if newly_enraged:
-                    self.log.append(f"  → {target.name_ru} впадает в ярость! +2 к атакам.")
+                    self.log.append(f"  → {target.name_ru} впадает в ярость!")
                 if target.is_alive:
                     target.frozen_turns = max(target.frozen_turns, 1)
                     self.log.append(f"{target.name_ru} скован холодом — пропустит следующий ход.")
@@ -224,8 +382,7 @@ class CombatEngine:
         if effect == "shield":
             self.player.shield_active = True
             self.log.append(
-                f"{self.player.name} зачитывает «{consumable.name_ru}»: "
-                f"следующая атака провалится."
+                f"{self.player.name} зачитывает «{consumable.name_ru}»: следующая атака провалится."
             )
             self._remove_consumable(consumable)
             self._end_player_turn()
@@ -239,75 +396,182 @@ class CombatEngine:
         except ValueError:
             pass
 
+    # ── Kill / Victory ────────────────────────────────────────────────────
+
     def _on_kill(self, target: Monster) -> None:
         self.log.append(f"{target.name_ru} повержен! (+{target.xp} XP)")
         self.xp_gained += target.xp
-        # JRPG-style: killing refunds some HP — a steady drip vs. a swarm.
-        kill_heal = max(2, target.max_hp // 5)
+        kill_heal = max(2, int(target.max_hp * 0.2 + target.cr * 2))
         actual = self.player.heal(kill_heal)
         if actual > 0:
             self.log.append(f"  → ты черпаешь силы из победы: +{actual} HP.")
+        gained = self.player.gain_focus(2)
+        if gained > 0:
+            self.log.append(f"  → Фокус +2 ({self.player.focus}/{self.player.focus_max})")
+        self.turn_order.remove(target)
 
-    # ----- Phase plumbing -----
+    # ── Phase plumbing ────────────────────────────────────────────────────
 
     def _end_player_turn(self) -> None:
         if not self.alive_enemies:
             self.phase = CombatPhase.VICTORY
             self.log.append(f"Победа! Получено {self.xp_gained} XP.")
             return
-        if self.player.blessed_turns > 0:
-            self.player.blessed_turns -= 1
+        # Decrement blessed status (per player action, not per enemy).
+        bs = self.player.get_status("blessed")
+        if bs is not None and bs.duration > 0:
+            bs.duration -= 1
+            if bs.duration == 0:
+                self.player.remove_status("blessed")
+
+        if self.extra_actions > 0:
+            self.extra_actions -= 1
+            self.phase = CombatPhase.PLAYER_TURN  # surge: another action
+            return
         self.phase = CombatPhase.ENEMY_TURN
 
     def enemy_turn(self) -> None:
-        for enemy in list(self.alive_enemies):
+        """Process all enemy turns in speed order, then return to player."""
+        # Remove dodge — it covered the entire enemy phase.
+        self.player.remove_status("dodging")
+
+        for enemy in self.turn_order.enemies_in_order():
             if not self.player.is_alive:
                 break
-            if enemy.frozen_turns > 0:
-                self.log.append(f"{enemy.name_ru} скован холодом — пропускает ход.")
-                enemy.frozen_turns -= 1
+            if not enemy.is_alive:
                 continue
-            self._enemy_attack(enemy)
-        self.player.dodge_active = False
+
+            # Tick enemy statuses (DoT, frozen duration countdown, etc.).
+            msgs = enemy.tick_statuses()
+            self.log.extend(msgs)
+
+            if not enemy.is_alive:
+                self._on_kill(enemy)
+                continue
+
+            skip_statuses = {"frozen", "stunned", "staggered"}
+            if any(enemy.has_status(s) for s in skip_statuses):
+                if enemy.has_status("staggered"):
+                    self.log.append(f"{enemy.name_ru} сбит с толку — пропускает ход.")
+                    enemy.remove_status("staggered")
+                else:
+                    self.log.append(f"{enemy.name_ru} скован — пропускает ход.")
+            else:
+                self._enemy_attack(enemy)
+                # Choose intent for NEXT round.
+                from ..core.rng import get_rng
+                enemy.choose_intent(get_rng())
+
         if not self.player.is_alive:
             self.phase = CombatPhase.DEFEAT
             self.log.append(f"{self.player.name} пал в бою...")
         else:
-            self.phase = CombatPhase.PLAYER_TURN
+            # Tick player statuses at start of their next turn.
+            msgs = self.player.tick_statuses()
+            self.log.extend(msgs)
+            if not self.player.is_alive:
+                self.phase = CombatPhase.DEFEAT
+                self.log.append(f"{self.player.name} пал от последствий статуса...")
+            else:
+                self.phase = CombatPhase.PLAYER_TURN
+
+    # ── Enemy attack logic ────────────────────────────────────────────────
 
     def _enemy_attack(self, enemy: Monster) -> None:
         if not enemy.attacks:
             return
+
+        # Shield scroll blocks one attack entirely.
         if self.player.shield_active:
-            self.log.append(
-                f"{enemy.name_ru} атакует, но магический щит отбивает удар!"
-            )
-            self.player.shield_active = False
+            self.log.append(f"{enemy.name_ru} атакует, но магический щит отбивает удар!")
+            self.player.remove_status("shielded")
             return
+
         attack = enemy.attacks[0]
-        rage_bonus = 2 if enemy.enraged else 0
+        rage_bonus = 0
+        enr = enemy.get_status("enraged")
+        if enr is not None:
+            rage_bonus = getattr(enr, "attack_bonus", 2)
 
-        # Pack tactics: advantage if there's any other living enemy in the fight.
-        has_ally = False
-        if "pack_tactics" in enemy.traits:
-            has_ally = any(other is not enemy for other in self.alive_enemies)
+        # Intent: heavy attack variant.
+        heavy = (enemy.current_intent == "heavy_attack")
+        if heavy:
+            attack_bonus_override = attack.to_hit + rage_bonus - 2
+            damage_expr = attack.damage  # rolled twice for heavy
+        else:
+            attack_bonus_override = attack.to_hit + rage_bonus
+            damage_expr = attack.damage
 
-        advantage = has_ally and not self.player.dodge_active
-        disadvantage = self.player.dodge_active and not has_ally
+        # Pack tactics: advantage if another living ally is present.
+        has_ally = "pack_tactics" in enemy.traits and any(
+            other is not enemy for other in self.alive_enemies
+        )
+        dodge_active = self.player.has_status("dodging")
+        advantage = has_ally and not dodge_active
+        disadvantage = dodge_active and not has_ally
+
+        # Weakened: attacks with disadvantage.
+        if enemy.has_status("weakened"):
+            disadvantage = True
+            advantage = False
 
         result = make_attack(
-            attacker_name=enemy.name_ru + (" (ярость)" if enemy.enraged else ""),
+            attacker_name=enemy.name_ru + (" (ярость)" if enemy.enraged else "")
+                          + (" (тяж.удар)" if heavy else ""),
             target_name=self.player.name,
-            attack_bonus=attack.to_hit + rage_bonus,
-            damage_expression=attack.damage,
+            attack_bonus=attack_bonus_override,
+            damage_expression=damage_expr,
             damage_modifier=0,
             target_ac=self.player.ac,
             damage_type=attack.damage_type,
             advantage=advantage,
             disadvantage=disadvantage,
         )
-        if has_ally and "pack_tactics" in enemy.traits and not self.player.dodge_active:
+
+        if has_ally and "pack_tactics" in enemy.traits and not dodge_active:
             self.log.append(f"  → стайная тактика {enemy.name_ru}: преимущество.")
         self.log.append(result.log)
+
         if result.hit:
-            self.player.take_damage(result.damage_total)
+            raw_dmg = result.damage_total
+            # Heavy attack: add a second damage roll.
+            if heavy:
+                bonus_r = roll(damage_expr)
+                raw_dmg += bonus_r.total
+                self.log.append(f"  → тяжёлый удар! Доп. урон: {bonus_r}.")
+            # Staggered player takes double damage.
+            if self.player.has_status("staggered"):
+                raw_dmg *= 2
+                self.log.append("  → ты сбит — двойной урон!")
+            self.player.take_damage(raw_dmg)
+            self._maybe_acid_splash(enemy)
+            # Riposte: counter if player is in riposte stance.
+            if self.player.has_status("riposte"):
+                self.player.remove_status("riposte")
+                self._riposte_counter(enemy)
+
+    def _maybe_acid_splash(self, enemy: Monster) -> None:
+        if "acid_splash" in enemy.traits and self.player.damage_type in MELEE_DAMAGE_TYPES:
+            actual = self.player.take_damage(1)
+            if actual > 0:
+                self.log.append(f"  → кислотный отклик {enemy.name_ru}: {actual} урона тебе.")
+
+    def _riposte_counter(self, enemy: Monster) -> None:
+        if not enemy.is_alive:
+            return
+        result = make_attack(
+            attacker_name=f"{self.player.name} (рипост)",
+            target_name=enemy.name_ru,
+            attack_bonus=self.player.attack_bonus,
+            damage_expression=self.player.damage_expression,
+            damage_modifier=self.player.damage_bonus,
+            target_ac=enemy.ac,
+            damage_type=self.player.damage_type,
+        )
+        self.log.append(result.log)
+        if result.hit:
+            dmg, newly_enraged = enemy.take_damage(result.damage_total, self.player.damage_type)
+            if newly_enraged:
+                self.log.append(f"  → {enemy.name_ru} впадает в ярость!")
+            if not enemy.is_alive:
+                self._on_kill(enemy)

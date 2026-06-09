@@ -11,6 +11,7 @@ from .screens.character_screen import render_character
 from .screens.combat_screen import render_combat
 from .screens.encounter_screen import render_encounter
 from .screens.inventory_screen import render_inventory
+from .screens.levelup_screen import render_levelup
 from .screens.name_entry_screen import render_name_entry
 from .screens.stairs_prompt_screen import render_stairs_prompt
 
@@ -42,6 +43,8 @@ def render(console: Console, game: Game) -> None:
         render_inventory(console, game)
     elif game.state == GameState.CHARACTER:
         render_character(console, game)
+    elif game.state == GameState.LEVEL_UP:
+        render_levelup(console, game)
     elif game.state == GameState.GAME_OVER:
         _render_game_over(console)
 
@@ -56,6 +59,16 @@ def _render_map(console: Console, game: Game) -> None:
         default=SHROUD,
     )
     console.rgb[0:d.width, 0:d.height] = display
+
+    # Loot items on floor.
+    for loot in d.loot:
+        if d.visible[loot.x, loot.y]:
+            console.print(loot.x, loot.y, "$", fg=col.GOLD)
+
+    # Revealed traps.
+    for tx, ty in d._traps_revealed:
+        if d.visible[tx, ty] or d.explored[tx, ty]:
+            console.print(tx, ty, "^", fg=col.RED)
 
     for m in d.monsters:
         if m.is_alive and d.visible[m.x, m.y]:
@@ -102,11 +115,13 @@ def _render_hud(console: Console, game: Game) -> None:
 
     console.print(36, y + 1, f"AC {p.ac}", fg=col.LIGHT_GRAY)
     console.print(36, y + 2, f"XP {p.xp}/{p.xp_to_next}", fg=col.LIGHT_GRAY)
-    console.print(46, y + 1, f"Золото: {p.inventory.gold}", fg=col.GOLD)
-    console.print(46, y + 2, f"Зелья: {pots}   Свитки: {scrolls}", fg=col.CYAN)
+    focus_bar = "█" * p.focus + "░" * (p.focus_max - p.focus)
+    console.print(46, y + 1, f"Золото: {p.inventory.gold} зм", fg=col.GOLD)
+    console.print(46, y + 2, f"Фокус [{focus_bar}] {p.focus}/{p.focus_max}", fg=col.CYAN)
+    console.print(64, y + 1, f"Зелья:{pots} Св:{scrolls}", fg=col.LIGHT_GRAY)
     console.print(
         1, y + 3,
-        "Двиг: hjkl/стрелки  yubn — диагональ  i — инвентарь  c — лист  q — сейв+выход",
+        "hjkl/стрелки · yubn-диаг · g-лут · i-инв · c-лист · q-выход",
         fg=col.DIM,
     )
 

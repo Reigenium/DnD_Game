@@ -8,6 +8,8 @@ from ..entities.monster import spawn_monster
 from . import tile as tile_mod
 from .dungeon import Dungeon, EncounterMarker, Room
 
+TRAP_PROBABILITY = 0.08  # per-room tile chance
+
 
 def _line(x1: int, y1: int, x2: int, y2: int) -> Iterator[tuple[int, int]]:
     if x1 == x2:
@@ -28,7 +30,6 @@ def _tunnel_between(a: tuple[int, int], b: tuple[int, int]) -> Iterator[tuple[in
 
 
 def _monster_weights_for_floor(floor: int) -> tuple[list[str], list[int]]:
-    """Return (pool, weights) per floor. Orcs become more common deeper."""
     pool = ["goblin", "skeleton", "wolf", "slime", "orc"]
     if floor <= 1:
         weights = [4, 3, 3, 3, 1]
@@ -52,7 +53,6 @@ def generate_floor(
     room_min_size: int = 5,
     room_max_size: int = 10,
 ) -> Dungeon:
-    """Generate one floor. ``floor`` index scales monster count and pool."""
     rng = get_rng()
     dungeon = Dungeon(width, height)
 
@@ -96,10 +96,10 @@ def generate_floor(
     candidate_rooms = rooms[1:]
     used: set[tuple[int, int]] = {dungeon.stairs_down}
 
+    # ── Monsters ──────────────────────────────────────────────────────────
     n_monsters = rng.randint(*monsters_per_floor)
     for _ in range(n_monsters * 3):
-        if (not candidate_rooms
-                or sum(1 for m in dungeon.monsters if m.is_alive) >= n_monsters):
+        if not candidate_rooms or sum(1 for m in dungeon.monsters if m.is_alive) >= n_monsters:
             break
         room = rng.choice(candidate_rooms)
         mx = rng.randint(room.x + 1, room.x + room.w - 2)
@@ -110,6 +110,15 @@ def generate_floor(
         dungeon.monsters.append(spawn_monster(monster_id, mx, my))
         used.add((mx, my))
 
+    # ── Mini-boss on floors 5, 10, 15, … ─────────────────────────────────
+    if floor % 5 == 0 and candidate_rooms:
+        boss_room = candidate_rooms[-1]
+        bx, by = boss_room.center
+        if (bx, by) not in used and not dungeon.monster_at(bx, by):
+            dungeon.monsters.append(spawn_monster("bone_knight", bx, by))
+            used.add((bx, by))
+
+    # ── Encounters ────────────────────────────────────────────────────────
     n_enc = rng.randint(*encounters_per_floor)
     placed = 0
     for _ in range(n_enc * 5):
@@ -125,5 +134,23 @@ def generate_floor(
         dungeon.tiles[ex, ey] = tile_mod.encounter_marker
         used.add((ex, ey))
         placed += 1
+
+    # ── Traps (starting from floor 2) ────────────────────────────────────
+    if floor >= 2:
+        trap_budget = max(1, floor // 2)
+        attempts = 0
+        placed_traps = 0
+        while placed_traps < trap_budget and attempts < trap_budget * 10:
+            attempts += 1
+            if not candidate_rooms:
+                break
+            room = rng.choice(candidate_rooms)
+            tx = rng.randint(room.x + 1, room.x + room.w - 2)
+            ty = rng.randint(room.y + 1, room.y + room.h - 2)
+            if (tx, ty) in used:
+                continue
+            dungeon.add_trap(tx, ty)
+            used.add((tx, ty))
+            placed_traps += 1
 
     return dungeon

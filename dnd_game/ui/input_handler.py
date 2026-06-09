@@ -1,10 +1,4 @@
-"""Keyboard input → game-controller calls.
-
-Name entry accepts both `tcod.event.TextInput` (preferred — supports IME and
-non-Latin keyboard layouts) and a Latin-letter fallback via `KeyDown`. The
-fallback dedupes against a recent TextInput so a single keypress isn't
-counted twice when both events fire.
-"""
+"""Keyboard input → game-controller calls."""
 from __future__ import annotations
 
 import time
@@ -42,8 +36,6 @@ NUM_KEYS = {
     tcod.event.KeySym.N9: 8,
 }
 
-# Latin letters typed via KeyDown — used as a fallback for name entry
-# when TextInput isn't firing.
 LETTER_KEYS = {
     tcod.event.KeySym.A: "a", tcod.event.KeySym.B: "b", tcod.event.KeySym.C: "c",
     tcod.event.KeySym.D: "d", tcod.event.KeySym.E: "e", tcod.event.KeySym.F: "f",
@@ -56,8 +48,6 @@ LETTER_KEYS = {
     tcod.event.KeySym.Y: "y", tcod.event.KeySym.Z: "z",
 }
 
-# Anything tighter than this and a TextInput from the same physical press
-# gets falsely flagged as "stale".
 TEXT_INPUT_DEDUP_WINDOW = 0.05
 
 
@@ -95,6 +85,8 @@ def handle_event(event: tcod.event.Event, game: Game) -> str | None:
         return _handle_inventory(sym, game)
     if game.state == GameState.CHARACTER:
         return _handle_character(sym, game)
+    if game.state == GameState.LEVEL_UP:
+        return _handle_levelup(sym, game)
     if game.state == GameState.GAME_OVER:
         return _handle_game_over(sym, game)
     return None
@@ -115,11 +107,6 @@ def _handle_name_entry(event, game: Game) -> str | None:
             return None
         if sym == tcod.event.KeySym.ESCAPE:
             return "quit"
-
-        # KEYDOWN for a letter/space fires BEFORE the matching TEXTINPUT for the
-        # same physical press. We process TEXTINPUTs first in the main loop so
-        # by the time we get here, last_text_input_at reflects whether TEXTINPUT
-        # already handled this letter. If yes, skip. If no, this is a fallback.
         if sym in LETTER_KEYS or sym == tcod.event.KeySym.SPACE:
             if time.monotonic() - game.last_text_input_at < TEXT_INPUT_DEDUP_WINDOW:
                 return None
@@ -135,6 +122,9 @@ def _handle_explore(sym, event, game: Game) -> str | None:
         is_repeat = bool(getattr(event, "repeat", False))
         dx, dy = MOVE_KEYS[sym]
         game.move_player(dx, dy, is_repeat=is_repeat)
+        return None
+    if sym == tcod.event.KeySym.G:
+        game.pick_up_item()
         return None
     if sym == tcod.event.KeySym.I:
         game.open_inventory()
@@ -166,6 +156,15 @@ def _handle_combat(sym, game: Game) -> str | None:
         game.combat_action("dodge")
     elif sym == tcod.event.KeySym.S:
         game.combat_action("second_wind")
+    elif sym == tcod.event.KeySym.W:
+        game.combat_action("sweep")
+    elif sym == tcod.event.KeySym.R:
+        game.combat_action("riposte")
+    elif sym == tcod.event.KeySym.P:
+        game.combat_action("trip")
+    elif sym == tcod.event.KeySym.U:
+        # U is used for diagonal movement in explore; in combat → action surge.
+        game.combat_action("action_surge")
     elif sym == tcod.event.KeySym.T:
         game.combat_action("cycle_target")
     elif sym == tcod.event.KeySym.F:
@@ -226,6 +225,13 @@ def _handle_character(sym, game: Game) -> str | None:
     if sym == tcod.event.KeySym.I:
         game.state = GameState.INVENTORY
         return None
+    return None
+
+
+def _handle_levelup(sym, game: Game) -> str | None:
+    if sym in NUM_KEYS:
+        idx = NUM_KEYS[sym]
+        game.levelup_choose(idx)
     return None
 
 

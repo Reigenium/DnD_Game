@@ -94,6 +94,8 @@ def save_game(game: "Game") -> None:
             "inv_armors": [a.id for a in p.inventory.armors],
             "inv_consumables": [c.id for c in p.inventory.consumables],
             "gold": p.inventory.gold,
+            "maneuvers": list(p.maneuvers),
+            "battle_style": p.battle_style,
         },
         "dungeon": {
             "width": d.width, "height": d.height,
@@ -158,6 +160,8 @@ def load_game(game: "Game") -> bool:
         if c in game.consumables_by_id
     ]
     p.inventory.gold = pdata.get("gold", 0)
+    p.maneuvers = list(pdata.get("maneuvers", []))
+    p.battle_style = pdata.get("battle_style", "defense")
 
     ddata = data["dungeon"]
     d = Dungeon(ddata["width"], ddata["height"])

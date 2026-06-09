@@ -1,0 +1,59 @@
+{
+  "sweep": {
+    "type": "maneuver",
+    "name_ru": "Размах",
+    "description_ru": "Атака по всем врагам одновременно. Основная цель получает полный урон, остальные — половину.",
+    "cost_focus": 2,
+    "targeting": "all_enemies",
+    "key": "W"
+  },
+  "riposte": {
+    "type": "maneuver",
+    "name_ru": "Рипост",
+    "description_ru": "Боевая стойка: при следующем ударе по тебе автоматически наносишь контратаку.",
+    "cost_focus": 1,
+    "targeting": "self",
+    "key": "R"
+  },
+  "trip": {
+    "type": "maneuver",
+    "name_ru": "Подсечка",
+    "description_ru": "Атака с попыткой сбить врага. При попадании — проверка СИЛ DC 13: провал → пропускает ход.",
+    "cost_focus": 1,
+    "targeting": "single",
+    "key": "P"
+  },
+  "heavy_strike": {
+    "type": "maneuver",
+    "name_ru": "Мощный удар",
+    "description_ru": "Атака с -2 к броску, но +2d6 дополнительного урона при попадании.",
+    "cost_focus": 2,
+    "targeting": "single",
+    "key": ""
+  },
+  "menace": {
+    "type": "maneuver",
+    "name_ru": "Устрашение",
+    "description_ru": "Запугиваешь всех врагов: они получают помеху к броскам атаки на 1 ход.",
+    "cost_focus": 2,
+    "targeting": "all_enemies",
+    "key": ""
+  },
+  "cleave": {
+    "type": "maneuver",
+    "name_ru": "Рассекающий удар",
+    "description_ru": "При убийстве врага — избыточный урон переходит на следующего.",
+    "cost_focus": 0,
+    "targeting": "single",
+    "key": "",
+    "passive": true
+  },
+  "battlecry": {
+    "type": "maneuver",
+    "name_ru": "Боевой клич",
+    "description_ru": "Клич даёт +3 Фокуса и снижает Стойкость всех врагов на 1.",
+    "cost_focus": 0,
+    "targeting": "all_enemies",
+    "key": ""
+  }
+}

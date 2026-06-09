@@ -42,6 +42,14 @@ class EncounterMarker:
     triggered: bool = False
 
 
+@dataclass
+class LootItem:
+    x: int
+    y: int
+    gold: int = 0
+    consumable_ids: list[str] = field(default_factory=list)
+
+
 class Dungeon:
     def __init__(self, width: int, height: int) -> None:
         self.width = width
@@ -52,6 +60,10 @@ class Dungeon:
         self.rooms: list[Room] = []
         self.monsters: list[Monster] = []
         self.encounters: list[EncounterMarker] = []
+        self.loot: list[LootItem] = []
+        # Trap tracking: set of (x,y) positions
+        self._traps: set[tuple[int, int]] = set()
+        self._traps_revealed: set[tuple[int, int]] = set()
         self.stairs_down: tuple[int, int] | None = None
         self.player_start: tuple[int, int] = (0, 0)
 
@@ -72,6 +84,36 @@ class Dungeon:
             if not e.triggered and e.x == x and e.y == y:
                 return e
         return None
+
+    # ── Loot ─────────────────────────────────────────────────────────────
+
+    def loot_at(self, x: int, y: int) -> LootItem | None:
+        for item in self.loot:
+            if item.x == x and item.y == y:
+                return item
+        return None
+
+    def add_loot(self, item: LootItem) -> None:
+        self.loot.append(item)
+
+    def remove_loot(self, x: int, y: int) -> None:
+        self.loot = [l for l in self.loot if not (l.x == x and l.y == y)]
+
+    # ── Traps ─────────────────────────────────────────────────────────────
+
+    def add_trap(self, x: int, y: int) -> None:
+        self._traps.add((x, y))
+
+    def is_trap(self, x: int, y: int) -> bool:
+        return (x, y) in self._traps
+
+    def is_trap_revealed(self, x: int, y: int) -> bool:
+        return (x, y) in self._traps_revealed
+
+    def reveal_trap(self, x: int, y: int) -> None:
+        self._traps_revealed.add((x, y))
+
+    # ── FOV ──────────────────────────────────────────────────────────────
 
     def update_fov(self, x: int, y: int, radius: int = 8) -> None:
         self.visible[:] = tcod.map.compute_fov(

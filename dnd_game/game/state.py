@@ -1,14 +1,15 @@
 """Top-level game state machine + controller methods the UI calls.
 
 States:
-  NAME_ENTRY     — pre-game name input (skipped if a save is loaded).
+  NAME_ENTRY     — pre-game name input.
   EXPLORE        — walking the dungeon.
   COMBAT         — modal JRPG turn-based fight.
   ENCOUNTER      — modal dialog from data/encounters.json.
   STAIRS_PROMPT  — modal Y/N confirm "descend to floor N+1?".
   INVENTORY      — modal inventory + equipment management.
   CHARACTER      — modal character sheet (read-only stats).
-  GAME_OVER      — death screen; restart with R or quit with Q.
+  LEVEL_UP       — modal level-up choice screen.
+  GAME_OVER      — death screen.
 """
 from __future__ import annotations
 
@@ -26,7 +27,7 @@ from ..entities.monster import Monster, spawn_monster
 from ..items.item import Armor, Consumable, Weapon
 from ..items.loader import load_armor, load_consumables, load_weapons
 from ..world import tile as tile_mod
-from ..world.dungeon import Dungeon, EncounterMarker
+from ..world.dungeon import Dungeon, EncounterMarker, LootItem
 from ..world.generator import generate_floor
 from . import save as save_mod
 
@@ -39,6 +40,7 @@ class GameState(Enum):
     STAIRS_PROMPT = "stairs_prompt"
     INVENTORY = "inventory"
     CHARACTER = "character"
+    LEVEL_UP = "level_up"
     GAME_OVER = "game_over"
 
 
@@ -53,10 +55,13 @@ class ActiveEncounter:
 class Game:
     MAP_WIDTH = 80
     MAP_HEIGHT = 43
-    MOVE_REPEAT_INTERVAL = 0.13  # seconds between moves when a key is held
+    MOVE_REPEAT_INTERVAL = 0.13
     MAX_COMBAT_ENEMIES = 3
     MAX_ORCS_PER_FIGHT = 1
-    BUMP_PULL_PROBABILITY = 0.35  # how likely an adjacent monster joins
+    BUMP_PULL_PROBABILITY = 0.35
+
+    # Level-up choices: levels that require player to pick a maneuver.
+    CHOICE_LEVELS: set[int] = {3, 4, 6, 7, 8, 9, 10}
 
     def __init__(self) -> None:
         self.weapons: dict[str, Weapon] = load_weapons()
@@ -74,8 +79,10 @@ class Game:
         self.combat_item_menu_open: bool = False
         self.pending_name: str = ""
         self.last_move_time: float = 0.0
-        # Used by name entry to dedupe TextInput vs KeyDown for the same press.
         self.last_text_input_at: float = 0.0
+        # Level-up pending choices (list of maneuver ids or "stat_str" etc.)
+        self.levelup_choices: list[str] = []
+        self.levelup_level: int = 0
 
         if save_mod.has_save():
             if save_mod.load_game(self):
@@ -84,7 +91,7 @@ class Game:
             else:
                 save_mod.delete_save()
 
-    # ---- Character bootstrap ----
+    # ── Character bootstrap ───────────────────────────────────────────────
 
     def _create_fighter(self, name: str) -> Character:
         c = Character(
@@ -112,7 +119,7 @@ class Game:
         if len(self.message_log) > 200:
             self.message_log = self.message_log[-200:]
 
-    # ---- NAME ENTRY ----
+    # ── NAME ENTRY ────────────────────────────────────────────────────────
 
     def name_entry_add(self, text: str) -> None:
         for ch in text:
@@ -146,6 +153,7 @@ class Game:
         self.state = GameState.NAME_ENTRY
         self.message_log = []
         self.pending_name = ""
+        self.levelup_choices = []
 
     def save(self) -> None:
         if self.dungeon is None:
@@ -154,7 +162,7 @@ class Game:
             return
         save_mod.save_game(self)
 
-    # ---- EXPLORE ----
+    # ── EXPLORE ───────────────────────────────────────────────────────────
 
     def move_player(self, dx: int, dy: int, *, is_repeat: bool = False) -> None:
         if self.state != GameState.EXPLORE or self.dungeon is None:
@@ -183,6 +191,15 @@ class Game:
         self.player.x, self.player.y = nx, ny
         self.dungeon.update_fov(nx, ny)
 
+        # Loot pickup auto-prompt (or press G separately).
+        loot = self.dungeon.loot_at(nx, ny)
+        if loot is not None:
+            self._pick_up_loot(loot)
+
+        # Trap check.
+        if self.dungeon.is_trap(nx, ny) and not self.dungeon.is_trap_revealed(nx, ny):
+            self._trigger_trap(nx, ny)
+
         enc_marker = self.dungeon.encounter_at(nx, ny)
         if enc_marker is not None:
             self.start_encounter(enc_marker)
@@ -190,6 +207,54 @@ class Game:
 
         if self.dungeon.stairs_down == (nx, ny) and prev_pos != self.dungeon.stairs_down:
             self.state = GameState.STAIRS_PROMPT
+
+        # Tick monster AI.
+        self._tick_monster_ai()
+
+    def pick_up_item(self) -> None:
+        """G key: pick up loot at player position."""
+        if self.dungeon is None:
+            return
+        loot = self.dungeon.loot_at(self.player.x, self.player.y)
+        if loot is None:
+            self.add_log("Здесь нечего подбирать.")
+            return
+        self._pick_up_loot(loot)
+
+    def _pick_up_loot(self, loot: LootItem) -> None:
+        assert self.dungeon is not None
+        if loot.gold > 0:
+            self.player.inventory.gold += loot.gold
+            self.add_log(f"Подобрано {loot.gold} зм.")
+        for item_id in loot.consumable_ids:
+            c = self.consumables_by_id.get(item_id)
+            if c:
+                self.player.inventory.consumables.append(c)
+                self.add_log(f"Подобрано: {c.name_ru}.")
+        self.dungeon.remove_loot(loot.x, loot.y)
+
+    def _trigger_trap(self, x: int, y: int) -> None:
+        assert self.dungeon is not None
+        from ..core.dice import roll as roll_dice, d20
+        save = d20(self.player.mod("dex"))
+        self.dungeon.reveal_trap(x, y)
+        if save.total >= 12:
+            self.add_log(f"Ловушка! ЛВК {save} vs DC 12 → успех, избежал.")
+        else:
+            dmg_roll = roll_dice("1d6")
+            actual = self.player.take_damage(dmg_roll.total)
+            self.add_log(f"Ловушка! ЛВК {save} vs DC 12 → провал: {actual} урона {dmg_roll}.")
+            if not self.player.is_alive:
+                self.state = GameState.GAME_OVER
+                save_mod.delete_save()
+
+    def _tick_monster_ai(self) -> None:
+        if self.dungeon is None:
+            return
+        from ..world.ai import tick_monster_ai
+        for m in self.dungeon.monsters:
+            if m.is_alive:
+                tick_monster_ai(m, self.player, self.dungeon)
 
     def open_inventory(self) -> None:
         if self.state == GameState.EXPLORE:
@@ -203,7 +268,7 @@ class Game:
         if self.state in (GameState.INVENTORY, GameState.CHARACTER):
             self.state = GameState.EXPLORE
 
-    # ---- STAIRS PROMPT ----
+    # ── STAIRS PROMPT ─────────────────────────────────────────────────────
 
     def confirm_descent(self) -> None:
         if self.state != GameState.STAIRS_PROMPT:
@@ -227,10 +292,9 @@ class Game:
         self.add_log(f"Этаж {self.floor}. (Короткий привал: +{rest} HP.)")
         save_mod.save_game(self)
 
-    # ---- COMBAT ----
+    # ── COMBAT ────────────────────────────────────────────────────────────
 
     def _start_combat_from_bump(self, target: Monster) -> None:
-        """Pull in up to (MAX-1) adjacent monsters. At most one orc per fight."""
         enemies: list[Monster] = [target]
         rng = get_rng()
         has_orc = (target.id == "orc")
@@ -245,7 +309,7 @@ class Game:
             if len(enemies) >= self.MAX_COMBAT_ENEMIES:
                 break
             if m.id == "orc" and has_orc:
-                continue  # cap orcs at 1
+                continue
             if rng.random() < self.BUMP_PULL_PROBABILITY:
                 enemies.append(m)
                 if m.id == "orc":
@@ -253,7 +317,8 @@ class Game:
         self.start_combat(enemies)
 
     def start_combat(self, enemies: list[Monster]) -> None:
-        self.player.second_wind_used = False  # reset per-combat
+        self.player.second_wind_used = False
+        self.player.focus = 0  # reset Focus at start of fight
         self.combat = CombatEngine(self.player, enemies)
         self.combat_item_menu_open = False
         self.state = GameState.COMBAT
@@ -264,6 +329,7 @@ class Game:
         if self.combat.phase != CombatPhase.PLAYER_TURN:
             return
 
+        acted = True
         if action == "attack":
             self.combat.player_attack()
         elif action == "dodge":
@@ -272,6 +338,15 @@ class Game:
             used = self.combat.player_second_wind()
             if not used:
                 return
+        elif action == "sweep":
+            self.combat.player_sweep()
+        elif action == "riposte":
+            self.combat.player_riposte()
+        elif action == "trip":
+            self.combat.player_trip()
+        elif action == "action_surge":
+            self.combat.player_action_surge()
+            acted = False  # surge doesn't end turn by itself
         elif action == "item":
             if isinstance(payload, Consumable):
                 used = self.combat.player_use_item(payload)
@@ -286,6 +361,11 @@ class Game:
         elif action == "select_target":
             if isinstance(payload, int):
                 self.combat.select_target(payload)
+            return
+        else:
+            return
+
+        if not acted:
             return
 
         if self.combat.phase == CombatPhase.ENEMY_TURN:
@@ -316,12 +396,49 @@ class Game:
         self._drain_combat_log()
         dead = {id(m) for m in self.combat.enemies if not m.is_alive}
         assert self.dungeon is not None
+
+        # Drop loot from dead monsters.
+        for m in self.combat.enemies:
+            if not m.is_alive:
+                self._drop_monster_loot(m)
+
         self.dungeon.monsters = [m for m in self.dungeon.monsters if id(m) not in dead]
-        if self.player.gain_xp(self.combat.xp_gained):
+
+        leveled = self.player.gain_xp(self.combat.xp_gained)
+        if leveled:
             self.add_log(f"Уровень повышен! Теперь {self.player.level}.")
+            # Action Surge unlocked at level 2 (auto).
+            if self.player.level == 2:
+                self.add_log("Разблокировано: Action Surge [U]!")
+            if self.player.level == 5:
+                self.add_log("Разблокировано: Дополнительная атака (2 удара за [A])!")
+
         self.combat = None
         self.combat_item_menu_open = False
-        self.state = GameState.EXPLORE
+
+        # Show level-up choice screen if needed.
+        if leveled and self.player.level in self.CHOICE_LEVELS:
+            self._prepare_levelup_choices()
+            self.state = GameState.LEVEL_UP
+        else:
+            self.state = GameState.EXPLORE
+
+    def _drop_monster_loot(self, monster: Monster) -> None:
+        if not monster.loot_table or self.dungeon is None:
+            return
+        rng = get_rng()
+        gold = 0
+        consumable_ids: list[str] = []
+        for entry in monster.loot_table:
+            if rng.random() < entry.get("chance", 0):
+                if entry.get("type") == "gold":
+                    gold += rng.randint(entry.get("min", 1), entry.get("max", 5))
+                elif entry.get("type") == "consumable":
+                    item_id = entry.get("id", "")
+                    if item_id in self.consumables_by_id:
+                        consumable_ids.append(item_id)
+        if gold > 0 or consumable_ids:
+            self.dungeon.add_loot(LootItem(monster.x, monster.y, gold, consumable_ids))
 
     def _finish_combat_defeat(self) -> None:
         self._drain_combat_log()
@@ -346,7 +463,57 @@ class Game:
         self.combat_item_menu_open = False
         self.state = GameState.EXPLORE
 
-    # ---- ENCOUNTERS ----
+    # ── LEVEL UP ──────────────────────────────────────────────────────────
+
+    def _prepare_levelup_choices(self) -> None:
+        from ..combat.abilities import all_maneuver_ids, ABILITY_REGISTRY
+        all_ids = all_maneuver_ids()
+        known = set(self.player.maneuvers)
+        available = [mid for mid in all_ids if mid not in known]
+        level = self.player.level
+
+        if level in (3, 6):
+            # Pick one of 3 maneuvers.
+            rng = get_rng()
+            rng.shuffle(available)
+            self.levelup_choices = available[:3]
+        elif level in (4, 7, 8, 9, 10):
+            # +2 stat OR maneuver.
+            rng = get_rng()
+            rng.shuffle(available)
+            self.levelup_choices = ["stat_str", "stat_dex", "stat_con"] + available[:2]
+        else:
+            self.levelup_choices = []
+        self.levelup_level = level
+
+    def levelup_choose(self, index: int) -> None:
+        if self.state != GameState.LEVEL_UP:
+            return
+        if not (0 <= index < len(self.levelup_choices)):
+            return
+        choice = self.levelup_choices[index]
+        if choice == "stat_str":
+            self.player.str_ += 2
+            self.add_log("СИЛ +2!")
+        elif choice == "stat_dex":
+            self.player.dex += 2
+            self.add_log("ЛВК +2!")
+        elif choice == "stat_con":
+            self.player.con += 2
+            self.player.max_hp += 2
+            self.player.current_hp += 2
+            self.add_log("ТЕЛ +2! Макс. HP +2.")
+        else:
+            # It's a maneuver id.
+            from ..combat.abilities import ABILITY_REGISTRY
+            ab = ABILITY_REGISTRY.get(choice, {})
+            self.player.maneuvers.append(choice)
+            self.add_log(f"Изучен манёвр: {ab.get('name_ru', choice)}!")
+        self.levelup_choices = []
+        self.state = GameState.EXPLORE
+        save_mod.save_game(self)
+
+    # ── ENCOUNTERS ────────────────────────────────────────────────────────
 
     def start_encounter(self, marker: EncounterMarker) -> None:
         edef = self.encounter_defs.get(marker.encounter_id)
@@ -525,7 +692,7 @@ class Game:
 
         return msgs
 
-    # ---- Inventory actions ----
+    # ── Inventory actions ─────────────────────────────────────────────────
 
     def inventory_items_flat(self) -> list[tuple[str, object]]:
         items: list[tuple[str, object]] = []

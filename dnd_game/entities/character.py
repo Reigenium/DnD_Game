@@ -1,10 +1,15 @@
-"""Player character (only Fighter for MVP)."""
+"""Player character — inherits Combatant for hp/statuses/resources."""
 from __future__ import annotations
 
 from dataclasses import dataclass, field
 
 from ..items.item import Armor, Consumable, Weapon
 from ..rules.ability import modifier
+from ..rules.status import (
+    ActionSurgeUsedStatus, BlessedStatus, DodgingStatus, RiposteStatus,
+    ShieldedStatus,
+)
+from .combatant import Combatant
 
 
 @dataclass
@@ -16,11 +21,13 @@ class Inventory:
 
 
 @dataclass
-class Character:
+class Character(Combatant):
+    # ── Identity ──────────────────────────────────────────────────────────
     name: str = "Боргх"
     char_class: str = "fighter"
     level: int = 1
 
+    # ── Ability scores ────────────────────────────────────────────────────
     str_: int = 16
     dex: int = 12
     con: int = 14
@@ -28,28 +35,26 @@ class Character:
     wis: int = 12
     cha: int = 8
 
-    max_hp: int = 12
-    current_hp: int = 12
-
+    # ── Progression ───────────────────────────────────────────────────────
     proficiency_bonus: int = 2
-
-    equipped_weapon: Weapon | None = None
-    equipped_armor: Armor | None = None
-    equipped_shield: Armor | None = None
-
-    inventory: Inventory = field(default_factory=Inventory)
-
-    x: int = 0
-    y: int = 0
-
     xp: int = 0
     xp_to_next: int = 300
 
-    # transient combat state
-    blessed_turns: int = 0
-    dodge_active: bool = False
-    shield_active: bool = False
-    second_wind_used: bool = False  # reset on each new fight
+    # ── Equipment ─────────────────────────────────────────────────────────
+    equipped_weapon: Weapon | None = None
+    equipped_armor: Armor | None = None
+    equipped_shield: Armor | None = None
+    inventory: Inventory = field(default_factory=Inventory)
+
+    # ── Position ──────────────────────────────────────────────────────────
+    x: int = 0
+    y: int = 0
+
+    # ── Progression unlocks (set as player levels up) ─────────────────────
+    maneuvers: list[str] = field(default_factory=list)
+    battle_style: str = "defense"  # defense | dueling | archery | great_weapon
+
+    # ── Ability helpers ───────────────────────────────────────────────────
 
     def mod(self, ability: str) -> int:
         return modifier(self._score(ability))
@@ -66,6 +71,8 @@ class Character:
             "str": self.str_, "dex": self.dex, "con": self.con,
             "int": self.int_, "wis": self.wis, "cha": self.cha,
         }
+
+    # ── Derived combat stats ──────────────────────────────────────────────
 
     @property
     def ac(self) -> int:
@@ -104,22 +111,92 @@ class Character:
         return self.equipped_weapon.damage_type if self.equipped_weapon else "bludgeoning"
 
     @property
-    def is_alive(self) -> bool:
-        return self.current_hp > 0
-
-    @property
     def spell_attack_bonus(self) -> int:
         return self.proficiency_bonus + self.mod("int")
 
-    def take_damage(self, amount: int) -> int:
-        amount = max(0, amount)
-        self.current_hp = max(0, self.current_hp - amount)
-        return amount
+    # ── Focus resource ────────────────────────────────────────────────────
 
-    def heal(self, amount: int) -> int:
-        before = self.current_hp
-        self.current_hp = min(self.max_hp, self.current_hp + max(0, amount))
-        return self.current_hp - before
+    @property
+    def focus_max(self) -> int:
+        return 3 + self.level // 2
+
+    @property
+    def focus(self) -> int:
+        return self.get_resource("focus")
+
+    @focus.setter
+    def focus(self, value: int) -> None:
+        self.set_resource("focus", max(0, min(self.focus_max, value)))
+
+    def gain_focus(self, amount: int) -> int:
+        return self.mod_resource("focus", amount, max_val=self.focus_max)
+
+    def spend_focus(self, amount: int) -> bool:
+        if self.focus < amount:
+            return False
+        self.mod_resource("focus", -amount)
+        return True
+
+    # ── Backward-compat status properties ─────────────────────────────────
+    # Old code that reads/writes these plain attributes continues to work.
+
+    @property
+    def dodge_active(self) -> bool:
+        return self.has_status("dodging")
+
+    @dodge_active.setter
+    def dodge_active(self, value: bool) -> None:
+        if value:
+            self.add_status(DodgingStatus(duration=1))
+        else:
+            self.remove_status("dodging")
+
+    @property
+    def shield_active(self) -> bool:
+        return self.has_status("shielded")
+
+    @shield_active.setter
+    def shield_active(self, value: bool) -> None:
+        if value:
+            self.add_status(ShieldedStatus(duration=-1))
+        else:
+            self.remove_status("shielded")
+
+    @property
+    def blessed_turns(self) -> int:
+        s = self.get_status("blessed")
+        return s.duration if s is not None else 0
+
+    @blessed_turns.setter
+    def blessed_turns(self, value: int) -> None:
+        if value <= 0:
+            self.remove_status("blessed")
+        else:
+            existing = self.get_status("blessed")
+            if existing is not None:
+                existing.duration = value
+            else:
+                self.add_status(BlessedStatus(duration=value))
+
+    @property
+    def second_wind_used(self) -> bool:
+        return bool(self.get_resource("second_wind_used"))
+
+    @second_wind_used.setter
+    def second_wind_used(self, value: bool) -> None:
+        self.set_resource("second_wind_used", int(value))
+
+    @property
+    def riposte_active(self) -> bool:
+        return self.has_status("riposte")
+
+    # ── Extra Attack (level 5 Fighter) ────────────────────────────────────
+
+    @property
+    def attacks_per_action(self) -> int:
+        return 2 if self.level >= 5 else 1
+
+    # ── Progression ───────────────────────────────────────────────────────
 
     def gain_xp(self, amount: int) -> bool:
         if amount <= 0:
@@ -140,7 +217,7 @@ class Character:
         if self.level >= 5:
             self.proficiency_bonus = 3
 
-    # ---- Class metadata for the character sheet UI ----
+    # ── Character sheet metadata ──────────────────────────────────────────
 
     @property
     def proficiencies_ru(self) -> list[str]:
@@ -156,12 +233,25 @@ class Character:
 
     @property
     def class_features_ru(self) -> list[str]:
-        if self.char_class == "fighter":
-            return [
-                "Боевой стиль (Защита)",
-                "Второе дыхание — лечение 1d10 + уровень, 1 раз за бой",
-            ]
-        return []
+        feats = [
+            "Боевой стиль: " + {
+                "defense": "Защита",
+                "dueling": "Дуэлянт",
+                "archery": "Стрельба",
+                "great_weapon": "Великое оружие",
+            }.get(self.battle_style, self.battle_style),
+            "Второе дыхание — лечение 1d10 + уровень, 1 раз за бой",
+        ]
+        if self.level >= 2:
+            feats.append("Action Surge — доп. действие 1 раз за бой")
+        if self.level >= 5:
+            feats.append("Дополнительная атака — 2 удара за 1 действие")
+        from ..combat.abilities import ABILITY_REGISTRY
+        for mid in self.maneuvers:
+            ab = ABILITY_REGISTRY.get(mid)
+            if ab:
+                feats.append(f"Манёвр: {ab['name_ru']}")
+        return feats
 
     @property
     def class_name_ru(self) -> str:

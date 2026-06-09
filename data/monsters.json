@@ -12,7 +12,15 @@
     "xp": 50,
     "cr": 0.25,
     "traits": [],
-    "description": "Мелкий злобный гуманоид."
+    "resistances": [],
+    "vulnerabilities": ["fire"],
+    "immunities": [],
+    "poise": 2,
+    "intent_pool": ["attack", "attack", "attack", "heavy_attack"],
+    "loot_table": [
+      { "type": "gold", "min": 1, "max": 5, "chance": 0.6 }
+    ],
+    "description": "Мелкий злобный гуманоид. Уязвим к огню."
   },
   "skeleton": {
     "name_ru": "Скелет",
@@ -27,7 +35,15 @@
     "xp": 50,
     "cr": 0.25,
     "traits": ["undead_resist"],
-    "description": "Восставший воин. Рубящий и колющий урон по нему уполовинен."
+    "resistances": ["slashing", "piercing"],
+    "vulnerabilities": ["bludgeoning"],
+    "immunities": ["poison"],
+    "poise": 3,
+    "intent_pool": ["attack", "attack", "defend", "heavy_attack"],
+    "loot_table": [
+      { "type": "gold", "min": 2, "max": 8, "chance": 0.4 }
+    ],
+    "description": "Восставший воин. Устойчив к рубящему/колющему, уязвим к дробящему."
   },
   "wolf": {
     "name_ru": "Волк",
@@ -42,6 +58,14 @@
     "xp": 50,
     "cr": 0.25,
     "traits": ["pack_tactics"],
+    "resistances": [],
+    "vulnerabilities": ["fire"],
+    "immunities": [],
+    "poise": 2,
+    "intent_pool": ["attack", "attack", "attack", "heavy_attack"],
+    "loot_table": [
+      { "type": "gold", "min": 0, "max": 3, "chance": 0.3 }
+    ],
     "description": "Стайная тактика: атакует с преимуществом, если есть другой враг рядом."
   },
   "slime": {
@@ -57,7 +81,13 @@
     "xp": 25,
     "cr": 0.125,
     "traits": ["acid_splash"],
-    "description": "При попадании по слизи в ближнем бою получаешь 1 кислотного урона."
+    "resistances": ["acid"],
+    "vulnerabilities": ["fire", "cold"],
+    "immunities": [],
+    "poise": 4,
+    "intent_pool": ["attack", "attack", "heavy_attack"],
+    "loot_table": [],
+    "description": "При попадании по слизи в ближнем бою получаешь 1 урона. Уязвима к огню и холоду."
   },
   "orc": {
     "name_ru": "Орк",
@@ -72,6 +102,40 @@
     "xp": 100,
     "cr": 0.5,
     "traits": ["rage_at_half"],
-    "description": "Ярость: при потере половины HP получает +2 к броскам атаки."
+    "resistances": [],
+    "vulnerabilities": [],
+    "immunities": [],
+    "poise": 5,
+    "intent_pool": ["attack", "attack", "heavy_attack", "heavy_attack", "defend"],
+    "loot_table": [
+      { "type": "gold", "min": 5, "max": 15, "chance": 0.8 },
+      { "type": "consumable", "id": "healing_potion", "chance": 0.2 }
+    ],
+    "description": "Ярость: при потере половины HP получает +2 к броскам атаки. Часто бьёт тяжёлыми ударами."
+  },
+  "bone_knight": {
+    "name_ru": "Костяной Рыцарь",
+    "char": "B",
+    "color": [255, 240, 200],
+    "max_hp": 45,
+    "ac": 16,
+    "str": 16, "dex": 11, "con": 16, "int": 6, "wis": 8, "cha": 5,
+    "attacks": [
+      { "name": "Удар двуручным мечом", "to_hit": 5, "damage": "2d6+3", "damage_type": "slashing" }
+    ],
+    "xp": 250,
+    "cr": 2.0,
+    "traits": ["undead_resist"],
+    "resistances": ["slashing", "piercing", "cold"],
+    "vulnerabilities": ["bludgeoning", "fire"],
+    "immunities": ["poison"],
+    "poise": 6,
+    "intent_pool": ["heavy_attack", "attack", "heavy_attack", "defend"],
+    "loot_table": [
+      { "type": "gold", "min": 20, "max": 40, "chance": 1.0 },
+      { "type": "consumable", "id": "greater_healing_potion", "chance": 0.5 },
+      { "type": "consumable", "id": "scroll_magic_missile", "chance": 0.4 }
+    ],
+    "description": "Мини-босс Катакомб. Крайне устойчив к рубящему и холоду, уязвим к дробящему и огню."
   }
 }
